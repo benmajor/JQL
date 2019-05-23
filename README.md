@@ -11,6 +11,14 @@ JSON Query Language (JQL - pronounced "jackal") is a query language system writt
 
 ### <a id="section-install"></a> 1. Installation:
 
+The easiest way to install the JQL library is using [Composer](https://getcomposer.org/). To add JQL to your project, simply run the following Composer command from your terminal:
+
+```
+$ composer require benmajor/jql
+```
+
+Alternatively, download all source files from the `src/` directory of the repository and include them in your project.
+
 ### <a id="section-usage"></a> 2. Usage:
 
 ### <a id="section-examples"></a> 3. Examples:
