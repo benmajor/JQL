@@ -23,13 +23,16 @@ $json = json_encode([
         'forename' => 'Chris',
         'surname'  => 'Major',
         'email'    => 'chris.major@example.com',
-        'age'      => 63
+        'age'      => 63,
+        'tags'     => [
+            'dad', 'father'
+        ]
     ],
     [
         'forename' => 'Joe',
         'surname'  => 'Bloggs',
         'email'    => 'jbloggs@example.com',
-        'age'      => 45
+        'age'      => 45.587
     ]
 ]);
 
@@ -37,17 +40,23 @@ $query = new JQL( $json );
 
 try
 {
+    /*
     print_r(
         $query->select([
-                    'CONCAT_WS(\' \', forename, surname) AS name',
-                    'email',
-                    'age'
+                    'forename',
+                    'surname',
+                    'RAND(155) AS random',
+                    'CURDATE() AS date',
+                    'DAYNAME(2019-01-02) AS formatted'
                 ])
-              ->where('surname == Major')
-              ->order('surname', 'DESC')
-              ->order('forename', 'ASC')
-              ->limit(3,0)
-              ->count()
+              ->where('tags NOT IN(hello)')
+              ->fetch()
+    );*/
+    
+    print_r(
+        $query->update([ 'forename' => 'UPPER(forename)' ])
+              ->where('tags CONTAINS father')
+              ->saveAsFile('test.json')
     );
 }
 catch( Exception $e )

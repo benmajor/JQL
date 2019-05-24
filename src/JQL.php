@@ -4,26 +4,52 @@ namespace BenMajor\JQL;
 
 class JQL
 {
-    private $fields    = [ ];
+    private $fields    = '*';
     private $where     = [ ];
     private $order     = [ ];
+    private $updates   = [ ];
     private $limitAmt  = null;
     private $offsetAmt = 0;
+    
+    # The locale (used for translating day and month names):
+    private $locale    = 'en_US';
     
     private $data;
     private $assoc;
     private $result;
     
-    private $functionRegEx = '/([A-Z_]+)\s*([(](.+)[)])\s*([AS|as]*+)\s*([a-zA-z0-9]*+)/';
+    # Regular expression to identify functions in the SELECT clause:
+    private $functionRegEx          = '/([A-Z_]+)\s*([(](.*)[)])\s*([AS|as]*+)\s*([a-zA-z0-9]*+)/';
+    private $whereFuncRegExIn       = '/([a-zA-z0-9]+)\s*([NOT\sIN]+)\s*([(])(...+)([)])/';
     
+    # Holds the current working mode:
+    private $mode;
+    
+    # Definition of permitted function names:
     private $allowedFunctions = [
         # String functions:
         'CHAR_LENGTH', 'CHARACTER_LENGTH', 'CONCAT', 'CONCAT_WS', 'FORMAT', 'LCASE', 'LEFT', 'LOWER', 'LPAD', 'LTRIM', 'REPLACE', 'REVERSE', 'RIGHT', 'RPAD', 'RTRIM', 'SUBSTR', 'SUBSTRING', 'TRIM', 'UCASE', 'UPPER', 
         
         # Numeric functions:
+        'ABS', 'ACOS', 'ASIN', 'ATAN', 'CEIL', 'CEILING', 'COS', 'COT', 'FLOOR', 'RAND', 'RANDOM', 'ROUND', 'SIN', 'SQRT', 'TAN',
         
         # Date functions:
+        'CURDATE', 'CURRENT_DATE', 'CURTIME', 'CURRENT_TIME', 'CURRENT_TIMESTAMP', 'DATE_FORMAT', 'DAY', 'DAYNAME', 'DAYOFMONTH', 'DAYOFWEEK', 'DAYOFYEAR', 'HOUR', 'LAST_DAY', 'MINUTE', 'MONTH', 'MONTHNAME', 'NOW', 'SECOND', 'TIMESTAMP', 'WEEK', 'YEAR',
+        
+        # Aggregate functions:
+        'SUM', 'AVG'
     ];
+    
+    # Definition of permitted UPDATE function names:
+    private $allowedUpdateFunctions = [
+        'APPEND', 'CONCAT_WS', 'LCASE', 'LEFT', 'LOWER', 'LPAD', 'LTRIM', 'PREPEND', 'REPLACE', 'REVERSE', 'RIGHT', 'RPAD', 'RTRIM', 'SUBSTR', 'SUBSTRING', 'TRIM', 'UCASE', 'UPPER'
+    ];
+    
+    # Definition of permitted WHERE function names:
+    private $allowedWhereFunctions = [ 'CONTAINS', 'IN', 'NOT IN' ];
+    
+    # Definition of aggregate functions:
+    private $aggregateFunctions    = [ 'SUM', 'AVG' ];
     
     function __construct( $json )
     {
@@ -63,11 +89,23 @@ class JQL
         }
         
         $this->assoc = json_decode( json_encode($this->data), true );
+        $this->setLocale();
+    }
+    
+    # Set the locale:
+    public function setLocale( string $locale = 'en_US' )
+    {
+        $this->locale = $locale;
+        setlocale(LC_TIME, $this->locale);
+        
+        return $this;
     }
     
     # Start by adding which fields to select:
     public function select( $fields )
     {
+        $this->mode = 'select';
+        
         if( is_array($fields) )
         {
             foreach( $fields as $field )
@@ -90,6 +128,15 @@ class JQL
         }
         
         # Return the object to preserve method-chaining:
+        return $this;
+    }
+    
+    #ÊHandle update:
+    public function update( $updates )
+    {
+        $this->mode    = 'update';
+        $this->updates = $updates;
+        
         return $this;
     }
     
@@ -187,6 +234,34 @@ class JQL
                 ];
             }
             
+            # CONTAINS:
+            elseif( strstr($clause, ' CONTAINS ') )
+            {
+                $clauseParts = explode(' CONTAINS ', $clause);
+                
+                $clauses['ops'][] = [
+                    'column'  => trim($clauseParts[0]),
+                    'operand' => 'CONTAINS',
+                    'compare' => trim( end($clauseParts) )
+                ];
+            }
+            
+            #ÊIN / NOT IN:
+            elseif( preg_match($this->whereFuncRegExIn, $clause, $clauseParts) )
+            {
+                # Convert the parameter to an array:
+                $array = explode(',', $clauseParts[4]);
+                
+                # Trim the array values:
+                array_walk( $array, function(&$item) { $item = trim($item); $item = trim($item, "'"); });
+            
+                $clauses['ops'][] = [
+                    'column'  => trim($clauseParts[1]),
+                    'operand' => $clauseParts[2],
+                    'compare' => $array
+                ];
+            }
+            
             # It's a normal operator:
             else
             {
@@ -256,7 +331,7 @@ class JQL
     {
         $this->execute();
         
-        return $this->result[0];
+        return (count($this->result) > 0) ? $this->result[0] : null;
     }
     
     # Return all matches:
@@ -271,6 +346,37 @@ class JQL
         
         return $this->result;
     }
+    
+    #ÊFetch all matches as JSON:
+    public function fetchAsJSON( bool $pretty = false)
+    {
+        return ($pretty) ? json_encode($this->fetch(), JSON_PRETTY_PRINT)
+                         : json_encode($this->fetch());
+    }
+    
+    #ÊFetch one result as JSON:
+    public function fetchOneAsJSON()
+    {
+        return json_encode(
+            $this->fetchOne
+        );
+    }
+    
+    #ÊSave the output to a JSON file:
+    public function saveAsFile( $filename )
+    {
+        # Open a file pointer:
+        $fh = fopen( $filename, 'w+' );
+        
+        # Write the JSOn:
+        $result = fwrite( $fh, $this->fetchAsJSON( true ) );
+        
+        # Close the file handler:
+        fclose($fh);
+        
+        return ($result > 0);
+    }
+    
     
     # Count the number of matches:
     public function count()
@@ -287,32 +393,13 @@ class JQL
         $return   = [ ];
         
         # Is there a WHERE clause?
-        if( ! empty($this->where) )
+        if( ! empty($this->where) && $this->mode == 'select' )
         {
-            $type        = $this->where['type'];
-            $clauseCount = count($this->where['ops']);
-                
-            foreach( $this->assoc as $row )
-            {
-                $matchCount  = 0;
-                
-                foreach( $this->where['ops'] as $clause )
-                {
-                    if( $this->check_clause( $clause, $row ) )
-                    {
-                        $matchCount++;
-                    }
-                }
-                
-                if( ($type == 'AND' && $matchCount == $clauseCount) || ($type == 'OR' && $matchCount > 0) )
-                {
-                    $matches[] = $row;
-                }
-            }
+            $matches = $this->execute_where();
         }
         
         # No where clause, so just assign all entries:
-        else
+        elseif( (empty($this->where) && $this->mode == 'select') || $this->mode == 'update' )
         {
             if( is_array($this->data) )
             {
@@ -349,54 +436,235 @@ class JQL
             });
         }
         
-        if( $this->fields != '*' && count($this->fields) )
+        
+        # If it's a select, we only want to return the specified rows:
+        if( $this->mode == 'select' )
         {
-            # Loop over the matches and handle the fields:
-            foreach( $matches as $match )
+            # Handle the select:
+            if( $this->fields != '*' && count($this->fields) )
             {
-                $tmp = [ ];
-                
-                # Loop over the fields and handle them:
-                foreach( $this->fields as $field )
+                # Loop over the matches and handle the fields:
+                foreach( $matches as $match )
                 {
-                    # If it's a function, execute it:
-                    if( preg_match($this->functionRegEx, $field, $functionParts) )
+                    $tmp = [ ];
+                    
+                    # Loop over the fields and handle them:
+                    foreach( $this->fields as $field )
                     {
-                        $key = (empty($functionParts[5])) ? $field : $functionParts[5];
-                        $tmp[ $key ] = $this->execute_function( $functionParts[1], (empty($functionParts[3]) ? [ ] : explode(',', $functionParts[3])), $match );
+                        # If it's a function, execute it:
+                        if( preg_match($this->functionRegEx, $field, $functionParts) )
+                        {
+                            # Map the matches:
+                            $functionName = $functionParts[1];
+                            $alias        = $functionParts[5];
+                            $parameters   = explode(',', $functionParts[3]);
+                            
+                            if( ! in_array($functionName, $this->allowedFunctions) )
+                            {
+                                throw new SyntaxException('Unknown function: '.$function);
+                            }
+                            
+                            # The name of the key:
+                            $key = (empty($alias)) ? $field : $alias;
+                            
+                            # Is it an aggregate function?
+                            if( in_array($functionName, $this->aggregateFunctions) )
+                            {
+                                $value = $this->execute_aggregate( $functionName, (empty($parameters) ? [ ] : $parameters), $matches );
+                            }
+                            else
+                            {
+                                $value = $this->execute_function( $functionName, (empty($parameters) ? [ ] : $parameters), $match );
+                            }
+                            
+                            $tmp[ $key ] = $value;
+                        }
+                        else
+                        {
+                            $tmp[$field] = $match[$field];
+                        }
                     }
-                    else
-                    {
-                        $tmp[$field] = $match[$field];
-                    }
+                    
+                    $return[] = $tmp;
                 }
-                
-                $return[] = $tmp;
+            }
+            else
+            {
+                $return = $matches;
             }
         }
         else
         {
+            #ÊHandle the updates:
+            if( ! empty($this->updates) )
+            {
+                # Loop over the matches:
+                foreach( $matches as &$match )
+                {
+                    # Loop over the updates and execute them:
+                    foreach( $this->updates as $field => $update )
+                    {
+                        # Does it match the WHERE clause?
+                        if( !empty($this->where) )
+                        {
+                            $type        = $this->where['type'];
+                            $clauseCount = count($this->where['ops']);
+                            
+                            $matchCount  = 0;
+                                
+                            foreach( $this->where['ops'] as $clause )
+                            {
+                                if( $this->check_clause( $clause, $match ) )
+                                {
+                                    $matchCount++;
+                                }
+                            }
+                                
+                            if( ($type == 'AND' && $matchCount == $clauseCount) || ($type == 'OR' && $matchCount > 0) )
+                            {
+                                # Is it a function?
+                                if( preg_match($this->functionRegEx, $update, $functionParts) )
+                                {
+                                    $functionName = $functionParts[1];
+                                    $args         = explode(',', $functionParts[3]);
+                                    
+                                    if( ! in_array($functionName, $this->allowedUpdateFunctions) )
+                                    {
+                                        throw new SyntaxException('Unknown function: '.$function);
+                                    }
+                                    
+                                    $match[$field] = $this->execute_function( $functionName, $args, $match);
+                                }
+                                else
+                                {
+                                    # Is it a forced-string replacement?
+                                    if( preg_match('/[\'](.*)[\']/', $update, $updateParts) || ! array_key_exists($update, $match) )
+                                    {
+                                        $match[$field] = (isset($updateParts) && count($updateParts)) ? $updateParts[1] : $update;
+                                    }
+                                    
+                                    # It's another field:
+                                    else
+                                    {
+                                        $match[$field] = $match[$update];
+                                    }
+                                }
+                            }
+                            
+                        }
+                        else
+                        {
+                            # Is it a function?
+                            if( preg_match($this->functionRegEx, $update, $functionParts) )
+                            {
+                                $functionName = $functionParts[1];
+                                $args         = explode(',', $functionParts[3]);
+                                
+                                if( ! in_array($functionName, $this->allowedUpdateFunctions) )
+                                {
+                                    throw new SyntaxException('Unknown function: '.$function);
+                                }
+                                
+                                $match[$field] = $this->execute_function( $functionName, $args, $match);
+                            }
+                            else
+                            {
+                                # Is it a forced-string replacement?
+                                if( preg_match('/[\'](.*)[\']/', $update, $updateParts) || ! array_key_exists($update, $match) )
+                                {
+                                    $match[$field] = (isset($updateParts) && count($updateParts)) ? $updateParts[1] : $update;
+                                }
+                                
+                                # It's another field:
+                                else
+                                {
+                                    $match[$field] = $match[$update];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
             $return = $matches;
         }
         
         $this->result = $return;
     }
     
-    # Actually run a function:
-    private function execute_function( $function, $args = [ ], $row )
+    # Handle the WHERE clause and return the matched subset of rows:
+    private function execute_where()
     {
-        if( ! in_array($function, $this->allowedFunctions) )
+        $type        = $this->where['type'];
+        $clauseCount = count($this->where['ops']);
+        $matches     = [ ];
+        
+        foreach( $this->assoc as $row )
         {
-            throw new SyntaxException('Unknown function: '.$function);
+            $matchCount  = 0;
+            
+            foreach( $this->where['ops'] as $clause )
+            {
+                if( $this->check_clause( $clause, $row ) )
+                {
+                    $matchCount++;
+                }
+            }
+            
+            if( ($type == 'AND' && $matchCount == $clauseCount) || ($type == 'OR' && $matchCount > 0) )
+            {
+                $matches[] = $row;
+            }
         }
         
+        return $matches;
+    }
+    
+    # Actually run a function:
+    private function execute_function( $function, $args = [ ], $row )
+    {   
         # Clean up the arguments:
+        $args = array_filter($args);
         array_walk( $args, function(&$item) { $item = trim($item); $item = trim($item, "'"); });
         
         $value = null;
         
+        /****************************/
+        /*                          */
+        /*     STRING FUNCTIONS     */
+        /*                          */
+        /****************************/
+        
+        # Add the specified string to the end of another string
+        if( $function == 'APPEND' )
+        {
+            if( count($args) < 2 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 2 parameters.');
+            }
+            
+            $string = (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0];
+            $append = (array_key_exists($args[1], $row)) ? $row[$args[1]] : $args[1];
+            
+            $value = $string.$append;
+        }
+        
+        # Add the specified string to the start of another string
+        if( $function == 'PREPEND' )
+        {
+            if( count($args) < 2 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 2 parameters.');
+            }
+            
+            $string  = (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0];
+            $prepend = (array_key_exists($args[1], $row)) ? $row[$args[1]] : $args[1];
+            
+            $value = $prepend.$string;
+        }
+        
         # Returns the length of a string (in characters)
-        if( $function == 'CHAR_LENGTH' || $function == 'CHARACTER_LENGTH' )
+        elseif( $function == 'CHAR_LENGTH' || $function == 'CHARACTER_LENGTH' )
         {
             if( count($args) != 1 )
             {
@@ -608,7 +876,7 @@ class JQL
         }
         
         # Converts a string to upper-case
-        elseif( $function == 'UCASE' || $function == 'UPPERCASE' )
+        elseif( $function == 'UCASE' || $function == 'UPPER' )
         {
             if( count($args) != 1 )
             {
@@ -620,17 +888,515 @@ class JQL
             $value = strtoupper($operator);
         }
         
+        /****************************/
+        /*                          */
+        /*    NUMERIC  FUNCTIONS    */
+        /*                          */
+        /****************************/
+        
+        # Returns the absolute value of a number
+        elseif( $function == 'ABS' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameters.');
+            }
+            
+            $operator = (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0];
+            
+            $value = abs($operator);
+        }
+        
+        # Returns the arc cosine of a number
+        elseif( $function == 'ACOS' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameters.');
+            }
+            
+            $operator = (float) (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0];
+            
+            $value = acos($operator);
+        }
+        
+        # Returns the arc sine of a number
+        elseif( $function == 'ASIN' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameters.');
+            }
+            
+            $operator = (float) (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0];
+            
+            $value = asin($operator);
+        }
+        
+        # Returns the arc tangent of a number
+        elseif( $function == 'ATAN' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameters.');
+            }
+            
+            $operator = (float) (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0];
+            
+            $value = atan($operator);
+        }
+        
+        # Returns the smallest integer value that is >= to a number
+        elseif( $function == 'CEIL' || $function == 'CEILING' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameters.');
+            }
+            
+            $operator = (float) (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0];
+            
+            $value = ceil($operator);
+        }
+        
+        # Returns the cosine of a number
+        elseif( $function == 'COS' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameters.');
+            }
+            
+            $operator = (float) (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0];
+            
+            $value = cos($operator);
+        }
+        
+        # Returns the cotangent of a number
+        elseif( $function == 'COT' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameters.');
+            }
+            
+            $operator = (float) (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0];
+            
+            $value = cot($operator);
+        }
+        
+        # Returns the largest integer value that is <= to a number
+        elseif( $function == 'FLOOR' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameters.');
+            }
+            
+            $operator = (float) (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0];
+            
+            $value = floor($operator);
+        }
+        
+        # Returns a random number
+        elseif( $function == 'RAND' || $function == 'RANDOM' )
+        {
+            $cleaned = array_filter($args);
+            
+            if( count($cleaned) > 2 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 0, 1 or 2 parameters.');
+            }
+            
+            # Seed the Mersene Twister RNG:
+            if( count($cleaned) == 1 )
+            {
+                mt_srand( $cleaned[0] );
+                $value = mt_rand();
+            }
+            elseif( count($cleaned) == 2 )
+            {
+                $value = mt_rand($cleaned[0], $cleaned[1]);
+            }
+            else
+            {
+                $value = mt_rand();
+            }
+        }
+        
+        # Rounds a number to a specified number of decimal places
+        elseif( $function == 'ROUND' )
+        {
+            if( count($args) > 2 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects 1 or 2 parameters.');
+            }
+            
+            # A precision has been specified:
+            if( count($args) > 1 )
+            {
+                if( ! ctype_digit($args[1]) )
+                {
+                    throw new SyntaxException('Parameter 1 for function '.$function.' must be an integer.');
+                }
+                
+                $operator = (float) (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0];
+            
+                $value = round($operator, $args[1]);
+            }
+            else
+            {
+                $operator = (float) (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0];
+            
+                $value = round($operator);
+            }
+        }
+        
+        # Returns the sine of a number
+        elseif( $function == 'SIN' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameters.');
+            }
+            
+            $operator = (float) (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0];
+            
+            $value = sin($operator);
+        }
+        
+        # Returns the square root of a number
+        elseif( $function == 'SQRT' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameters.');
+            }
+            
+            $operator = (float) (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0];
+            
+            $value = sqrt($operator);
+        }
+        
+        # Returns the tangent of a number
+        elseif( $function == 'TAN' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameters.');
+            }
+            
+            $operator = (float) (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0];
+            
+            $value = tan($operator);
+        }
+        
+        
+        /****************************/
+        /*                          */
+        /*      DATE  FUNCTIONS     */
+        /*                          */
+        /****************************/
+        
+        # Returns the current date
+        elseif( $function == 'CURDATE' || $function == 'CURRENT_DATE' )
+        {
+            if( count($args) )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 0 parameters.');
+            }
+            
+            $value = date('Y-m-d');
+        }
+        
+        # Returns the current time:
+        elseif( $function == 'CURTIME' || $function == 'CURRENT_TIME' )
+        {
+            if( count($args) )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 0 parameters.');
+            }
+            
+            $value = date('H:i:s');
+        }
+        
+        # Returns the number of seconds since the Unix epoch:
+        elseif( $function == 'CURRENT_TIMESTAMP' )
+        {
+            if( count($args) )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 0 parameters.');
+            }
+            
+            $value = time();
+        }
+        
+        # Formats a date
+        elseif( $function == 'DATE_FORMAT' )
+        {
+            if( count($args) != 2 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 2 parameters.');
+            }
+            
+            $operator = strtotime( (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0] );
+            
+            $value = strftime($args[1], $operator);
+        }
+        
+        # Returns the day of the month for a given date
+        elseif( $function == 'DAY' || $function == 'DAYOFMONTH' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameter.');
+            }
+            
+            $operator = strtotime( (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0] );
+            
+            $value = date('j', $operator);
+        }
+        
+        # Returns the weekday name for a given date
+        elseif( $function == 'DAYNAME' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameter.');
+            }
+            
+            $operator = strtotime( (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0] );
+            
+            $value = strftime('%A', $operator);
+        }
+        
+        # Returns the weekday index for a given date
+        elseif( $function == 'DAYOFWEEK' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameter.');
+            }
+            
+            $operator = strtotime( (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0] );
+            
+            $value = date('N', $operator);
+        }
+        
+        # Returns the day of the year for a given date
+        elseif( $function == 'DAYOFYEAR' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameter.');
+            }
+            
+            $operator = strtotime( (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0] );
+            
+            $value = date('z', $operator);
+        }
+        
+        # Returns the hour part for a given date
+        elseif( $function == 'HOUR' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameter.');
+            }
+            
+            $operator = strtotime( (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0] );
+            
+            $value = date('H', $operator);
+        }
+        
+        # Extracts the last day of the month for a given date
+        elseif( $function == 'LAST_DAY' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameter.');
+            }
+            
+            $operator = strtotime( (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0] );
+            
+            $value = date('t', $operator);
+        }
+        
+        # Returns the minute part of a time/datetime
+        elseif( $function == 'MINUTE' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameter.');
+            }
+            
+            $operator = strtotime( (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0] );
+            
+            $value = date('i', $operator);
+        }
+        
+        # Returns the month part for a given date
+        elseif( $function == 'MONTH' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameter.');
+            }
+            
+            $operator = strtotime( (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0] );
+            
+            $value = date('m', $operator);
+        }
+        
+        # Returns the name of the month for a given date
+        elseif( $function == 'MONTHNAME' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameter.');
+            }
+            
+            $operator = strtotime( (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0] );
+            
+            $value = strftime('%B', $operator);
+        }
+        
+        # Returns the current date and time
+        elseif( $function == 'NOW' )
+        {
+            if( count($args) )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 0 parameters.');
+            }
+            
+            $value = date('Y-m-d H:i:s');
+        }
+
+        # Returns the seconds part of a time/datetime
+        elseif( $function == 'SECOND' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameter.');
+            }
+            
+            $operator = strtotime( (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0] );
+            
+            $value = date('s', $operator);
+        }
+        
+        # Returns a datetime value based on a date or datetime value
+        elseif( $function == 'TIMESTAMP' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameter.');
+            }
+            
+            $operator = strtotime( (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0] );
+            
+            $value = date('U', $operator);
+        }
+        
+        # Returns the week number for a given date
+        elseif( $function == 'WEEK' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameter.');
+            }
+            
+            $operator = strtotime( (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0] );
+            
+            $value = date('W', $operator);
+        }
+        
+        # Returns the year part for a given date
+        elseif( $function == 'YEAR' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameter.');
+            }
+            
+            $operator = strtotime( (array_key_exists($args[0], $row)) ? $row[$args[0]] : $args[0] );
+            
+            $value = date('Y', $operator);
+        }
+        
         return $value;
+    }
+    
+    # Aggregate functions have to be handled differently, because we need to pass the whole
+    # result set in, not just a single row:
+    private function execute_aggregate( $function, $args = [ ], $rows )
+    {
+        # Clean up the arguments:
+        array_walk( $args, function(&$item) { $item = trim($item); $item = trim($item, "'"); });
+        
+        $value = null;
+        
+        # Returns the average value of an expression
+        if( $function == 'AVG' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameters.');
+            }
+            
+            $total   = 0;
+            $numRows = count($rows);
+            $found   = 0;
+            
+            foreach( $rows as $row )
+            {
+                if( array_key_exists($args[0], $row) )
+                {
+                    $total+= $row[ $args[0] ];
+                    $found++;
+                }
+            }
+            
+            if( ! $found )
+            {
+                throw new SyntaxException('Specified column \''.$args[0].'\' does not exist in specified dataset.' );
+            }
+            
+            return $total / $numRows;
+        }
+        
+        # Calculates the sum of a set of values
+        elseif( $function == 'SUM' )
+        {
+            if( count($args) != 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameters.');
+            }
+            
+            $total   = 0;
+            $found   = 0;
+            
+            foreach( $rows as $row )
+            {
+                if( array_key_exists($args[0], $row) )
+                {
+                    $total+= $row[ $args[0] ];
+                    $found++;
+                }
+            }
+            
+            if( ! $found )
+            {
+                throw new SyntaxException('Specified column \''.$args[0].'\' does not exist in specified dataset.' );
+            }
+            
+            return $total;
+        }
     }
     
     # Run a where clause:
     private function check_clause( $clause, $row )
     {
-        if( ! array_key_exists($clause['column'], $row) )
-        {
-            throw new SyntaxException('Specified column \''.$clause['column'].'\' does not exist.');
-        }
-        
         # This is the map of comparrison keywords:
         $keywordMap = [
             'null'  => null,
@@ -638,8 +1404,16 @@ class JQL
             'false' => false,
         ];
         
-        $value   = $row[ $clause['column'] ];
-        $compare = (array_key_exists(strtolower($clause['compare']), $keywordMap)) ? $keywordMap[strtolower($clause['compare'])] : $clause['compare'];
+        $value = (array_key_exists($clause['column'], $row)) ? $row[ $clause['column'] ] : null;
+        
+        if( ! is_array($clause['compare']) )
+        {
+            $compare = (array_key_exists(strtolower($clause['compare']), $keywordMap)) ? $keywordMap[strtolower($clause['compare'])] : $clause['compare'];
+        }
+        else
+        {
+            $compare = $clause['compare'];
+        }
         
         # LIKE clauses a bit different:
         if( in_array($clause['operand'], [ 'LIKE', 'SLIKE', 'NOT LIKE', 'NOT SLIKE' ]) )
@@ -735,6 +1509,45 @@ class JQL
                 }
             }
         }
+        
+        # IN() function:
+        elseif( $clause['operand'] == 'IN' )
+        {
+            return in_array(
+                $row[ $clause['column'] ],
+                $clause['compare']
+            );
+        }
+        
+        # NOT IN() function:
+        elseif( $clause['operand'] == 'NOT IN' )
+        {
+            return ! in_array(
+                (array_key_exists($clause['column'], $row)) ? $row[$clause['column']] : [ ],
+                $clause['compare']
+            );
+        }
+        
+        # CONTAINS function:
+        elseif( $clause['operand'] == 'CONTAINS' )
+        {
+            if( isset($row[$clause['column']]) && ! is_array($row[$clause['column']]) )
+            {
+                throw new QueryException('CONTAINS must be called on a column containing an array.');
+            }
+            
+            if( ! isset($row[$clause['column']]) )
+            {
+                return false;
+            }
+            
+            return in_array(
+                $clause['compare'],
+                $row[ $clause['column'] ]
+            );
+        }
+        
+        # Basic operations:
         else
         {
             switch( $clause['operand'] )
@@ -772,5 +1585,7 @@ class JQL
                     break;
             }
         }
+        
+        return false;
     }
 }
