@@ -370,7 +370,7 @@ This section contains some examples demonstrating the usage of JQL. If you disco
 
 **All examples below assume the following JSON structure:**
 
-```json
+```
 [
   {
     'id': 1,
