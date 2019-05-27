@@ -13,6 +13,7 @@ class JQL
     
     # The locale (used for translating day and month names):
     private $locale    = 'en_US';
+    private $timezone;
     
     private $data;
     private $assoc;
@@ -22,13 +23,16 @@ class JQL
     private $functionRegEx          = '/([A-Z_]+)\s*([(](.*)[)])\s*([AS|as]*+)\s*([a-zA-z0-9]*+)/';
     private $whereFuncRegExIn       = '/([a-zA-z0-9]+)\s*([NOT\sIN]+)\s*([(])(...+)([)])/';
     
+    # Regular expression to identify field aliasing:
+    private $aliasRegEx             = '/([a-zA-Z0-9_-]+)\s*([AS]+)\s*([a-zA-Z0-9_]+)/';
+    
     # Holds the current working mode:
     private $mode;
     
     # Definition of permitted function names:
     private $allowedFunctions = [
         # String functions:
-        'CHAR_LENGTH', 'CHARACTER_LENGTH', 'CONCAT', 'CONCAT_WS', 'FORMAT', 'LCASE', 'LEFT', 'LOWER', 'LPAD', 'LTRIM', 'REPLACE', 'REVERSE', 'RIGHT', 'RPAD', 'RTRIM', 'SUBSTR', 'SUBSTRING', 'TRIM', 'UCASE', 'UPPER', 
+        'APPEND', 'CHAR_LENGTH', 'CHARACTER_LENGTH', 'CONCAT', 'CONCAT_WS', 'FORMAT', 'LCASE', 'LEFT', 'LOWER', 'LPAD', 'LTRIM', 'PREPEND', 'REPLACE', 'REVERSE', 'RIGHT', 'RPAD', 'RTRIM', 'SUBSTR', 'SUBSTRING', 'TRIM', 'UCASE', 'UPPER', 
         
         # Numeric functions:
         'ABS', 'ACOS', 'ASIN', 'ATAN', 'CEIL', 'CEILING', 'COS', 'COT', 'FLOOR', 'RAND', 'RANDOM', 'ROUND', 'SIN', 'SQRT', 'TAN',
@@ -89,7 +93,10 @@ class JQL
         }
         
         $this->assoc = json_decode( json_encode($this->data), true );
+        
         $this->setLocale();
+        $this->setTimezone( date_default_timezone_get() );
+        
     }
     
     # Set the locale:
@@ -97,6 +104,16 @@ class JQL
     {
         $this->locale = $locale;
         setlocale(LC_TIME, $this->locale);
+        
+        return $this;
+    }
+    
+    # Set the timezone:
+    public function setTimezone( string $timezone = 'Europe/London' )
+    {
+        $this->timezone = $timezone;
+        
+        date_default_timezone_set( $this->timezone );
         
         return $this;
     }
@@ -116,7 +133,17 @@ class JQL
                 }
             }
             
-            $this->fields = $fields;
+            # If we already have some fields, merge them:
+            if( is_array($this->fields) )
+            {
+                $this->fields = array_merge($this->fields, $fields);
+            }
+            
+            # It's a * string, overwrite:
+            else
+            {
+                $this->fields = $fields;
+            }
         }
         elseif( $fields == '*' )
         {
@@ -182,6 +209,30 @@ class JQL
                 $clauses['ops'][] = [
                     'column'  => trim($clauseParts[0]),
                     'operand' => '!=',
+                    'compare' => null
+                ];
+            }
+            
+            # Handle EMPTY:
+            elseif( strstr($clause, ' IS EMPTY') )
+            {
+                $clauseParts = explode(' IS EMPTY', $clause);
+                
+                $clauses['ops'][] = [
+                    'column'  => trim($clauseParts[0]),
+                    'operand' => 'empty',
+                    'compare' => null
+                ];
+            }
+            
+            # Handle NOT EMPTY:
+            elseif( strstr($clause, ' IS NOT EMPTY') )
+            {
+                $clauseParts = explode(' IS NOT EMPTY', $clause);
+                
+                $clauses['ops'][] = [
+                    'column'  => trim($clauseParts[0]),
+                    'operand' => '!empty',
                     'compare' => null
                 ];
             }
@@ -339,12 +390,12 @@ class JQL
     {
         $this->execute();
         
-        if( $this->limitAmt != null )
+        if( $this->limitAmt != null && count($this->result) > 0 )
         {
             return array_slice($this->result, $this->offsetAmt, $this->limitAmt);
         }
         
-        return $this->result;
+        return (count($this->result) > 0 ) ? $this->result : null;
     }
     
     #ÊFetch all matches as JSON:
@@ -355,7 +406,7 @@ class JQL
     }
     
     #ÊFetch one result as JSON:
-    public function fetchOneAsJSON()
+    public function fetchOneAsJSON( bool $pretty = false )
     {
         return json_encode(
             $this->fetchOne
@@ -461,7 +512,7 @@ class JQL
                             
                             if( ! in_array($functionName, $this->allowedFunctions) )
                             {
-                                throw new SyntaxException('Unknown function: '.$function);
+                                throw new SyntaxException('Unknown function: '.$functionName);
                             }
                             
                             # The name of the key:
@@ -481,7 +532,15 @@ class JQL
                         }
                         else
                         {
-                            $tmp[$field] = $match[$field];
+                            # Are we casting the field to an alias?
+                            if( preg_match($this->aliasRegEx, $field, $aliasParts) )
+                            {
+                                $tmp[ $aliasParts[3] ] = $match[ $aliasParts[1] ];
+                            }
+                            else
+                            {
+                                $tmp[$field] = $match[$field];
+                            }
                         }
                     }
                     
@@ -1510,6 +1569,9 @@ class JQL
             }
         }
         
+        # NULL:
+        
+        
         # IN() function:
         elseif( $clause['operand'] == 'IN' )
         {
@@ -1545,6 +1607,38 @@ class JQL
                 $clause['compare'],
                 $row[ $clause['column'] ]
             );
+        }
+        
+        # EMPTY function:
+        elseif( $clause['operand'] == 'empty' )
+        {
+            if( isset($row[$clause['column']]) && ! is_array($row[$clause['column']]) )
+            {
+                throw new QueryException('CONTAINS must be called on a column containing an array.');
+            }
+            
+            if( ! isset($row[$clause['column']]) )
+            {
+                return true;
+            }
+            
+            return empty($row[ $clause['column'] ]);
+        }
+        
+        # EMPTY function:
+        elseif( $clause['operand'] == '!empty' )
+        {
+            if( isset($row[$clause['column']]) && ! is_array($row[$clause['column']]) )
+            {
+                throw new QueryException('CONTAINS must be called on a column containing an array.');
+            }
+            
+            if( ! isset($row[$clause['column']]) )
+            {
+                return false;
+            }
+            
+            return !empty($row[ $clause['column'] ]);
         }
         
         # Basic operations:

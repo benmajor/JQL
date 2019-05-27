@@ -6,7 +6,7 @@ require 'src/JQL.php';
 require 'src/QueryException.php';
 require 'src/SyntaxException.php';
 
-$json = json_encode([
+$json = [
     [
         'forename' => 'Ben',
         'surname'  => 'Major',
@@ -32,32 +32,29 @@ $json = json_encode([
         'forename' => 'Joe',
         'surname'  => 'Bloggs',
         'email'    => 'jbloggs@example.com',
-        'age'      => 45.587
+        'age'      => null
     ]
-]);
+];
 
 $query = new JQL( $json );
 
 try
 {
-    /*
-    print_r(
-        $query->select([
-                    'forename',
-                    'surname',
-                    'RAND(155) AS random',
-                    'CURDATE() AS date',
-                    'DAYNAME(2019-01-02) AS formatted'
-                ])
-              ->where('tags NOT IN(hello)')
-              ->fetch()
-    );*/
     
     print_r(
-        $query->update([ 'forename' => 'UPPER(forename)' ])
-              ->where('tags CONTAINS father')
-              ->saveAsFile('test.json')
+        $query->setTimezone('Europe/Paris')
+              ->select(['forename'])->select(['CURTIME()'])
+              ->where('tags IS NOT EMPTY')
+              ->fetch()
     );
+    
+    /*print_r(
+        $query->update([ 'forename' => 'UPPER(forename)' ])
+              ->update([ 'surname'  => 'PREPEND(surname, \'Mr. \')'])
+              ->where('tags CONTAINS father AND forename = chris')
+              ->order('surname', 'ASC')
+              ->fetch()
+    );*/
 }
 catch( Exception $e )
 {
