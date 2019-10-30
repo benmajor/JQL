@@ -1700,7 +1700,14 @@ class JQL
             switch( $clause['operand'] )
             {
                 case '=':
-                    return strtolower($value) == strtolower($compare);
+                    if( is_scalar($value) && is_scalar($compare) )
+                    {
+                        return strtolower($value) == strtolower($compare);
+                    }
+                    else
+                    {
+                        return false;
+                    }
                     break;
                 
                 case '==':
