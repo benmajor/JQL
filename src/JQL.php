@@ -329,6 +329,9 @@ class JQL
                             'operand' => $find,
                             'compare' => trim(end($clauseParts))
                         ];
+
+                        # If we've found one, break (otherwise >= will evaluate to >):
+                        break;
                     }
                 }
             }
