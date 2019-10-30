@@ -255,6 +255,7 @@ Function name | Description
 `CHARACTER_LENGTH(field)` | As above.
 `CONCAT(field1, field2)` | Concatenate two fields into a single string.
 `CONCAT_WS(field1, field2, str)` | Concatenate two fields into a single string using the specified separator
+`DISTINCT(field)` | Returns a list of unique values for `field`. If `field` is an array, the function will merge all arays and return a distinct list. Otherwise, it merges all string values and returns a distinct list.
 `FORMAT(field, sf)` | Format the specified field into a float value using the specified number of significant figures; adds decimal points and thousand separators.
 `LCASE(field)` | Convert a field to lower case.
 `LEFT(field, chars)` | Returns `chars` characters from the left of the specified field.
@@ -322,8 +323,10 @@ Function name | Description
 
 Function name | Description
 --- | ---
-`SUM(field)` | Returns the sum value of `field` from all matched records.
 `AVG(field)` | Returns the average value (mean) of `field` from all matched records.
+`MAX(field)` | Returns the maximum numeric value of `field` from all matched records.
+`MIN(field)` | Returns the minimum numeric value of `field` from all matched records.
+`SUM(field)` | Returns the sum value of `field` from all matched records.
 
 ### <a id="subsection-updatefn"></a> `update()` functions:
 
