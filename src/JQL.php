@@ -120,12 +120,12 @@ class JQL
     # Reset everything (so we can use the same object):
     public function reset()
     {
-        $this->$fields    = '*';
-        $this->$where     = [ ];
-        $this->$order     = [ ];
-        $this->$updates   = [ ];
-        $this-> $limitAmt  = null;
-        $this->$offsetAmt = 0;
+        $this->fields    = '*';
+        $this->where     = [ ];
+        $this->order     = [ ];
+        $this->updates   = [ ];
+        $this->limitAmt  = null;
+        $this->offsetAmt = 0;
 
         # Return the object to preserve method-chaining:
         return $this;
