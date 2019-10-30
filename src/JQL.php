@@ -32,7 +32,7 @@ class JQL
     # Definition of permitted function names:
     private $allowedFunctions = [
         # String functions:
-        'APPEND', 'CHAR_LENGTH', 'CHARACTER_LENGTH', 'CONCAT', 'CONCAT_WS', 'FORMAT', 'LCASE', 'LEFT', 'LOWER', 'LPAD', 'LTRIM', 'PREPEND', 'REPLACE', 'REVERSE', 'RIGHT', 'RPAD', 'RTRIM', 'SUBSTR', 'SUBSTRING', 'TRIM', 'UCASE', 'UPPER', 
+        'APPEND', 'CHAR_LENGTH', 'CHARACTER_LENGTH', 'CONCAT', 'CONCAT_WS', 'DISTINCT', 'FORMAT', 'LCASE', 'LEFT', 'LOWER', 'LPAD', 'LTRIM', 'PREPEND', 'REPLACE', 'REVERSE', 'RIGHT', 'RPAD', 'RTRIM', 'SUBSTR', 'SUBSTRING', 'TRIM', 'UCASE', 'UPPER', 
         
         # Numeric functions:
         'ABS', 'ACOS', 'ASIN', 'ATAN', 'CEIL', 'CEILING', 'COS', 'COT', 'FLOOR', 'RAND', 'RANDOM', 'ROUND', 'SIN', 'SQRT', 'TAN',
@@ -41,7 +41,7 @@ class JQL
         'CURDATE', 'CURRENT_DATE', 'CURTIME', 'CURRENT_TIME', 'CURRENT_TIMESTAMP', 'DATE_FORMAT', 'DAY', 'DAYNAME', 'DAYOFMONTH', 'DAYOFWEEK', 'DAYOFYEAR', 'HOUR', 'LAST_DAY', 'MINUTE', 'MONTH', 'MONTHNAME', 'NOW', 'SECOND', 'TIMESTAMP', 'WEEK', 'YEAR',
         
         # Aggregate functions:
-        'SUM', 'AVG'
+        'AVG', 'MAX', 'MIN', 'SUM'
     ];
     
     # Definition of permitted UPDATE function names:
@@ -53,7 +53,7 @@ class JQL
     private $allowedWhereFunctions = [ 'CONTAINS', 'IN', 'NOT IN' ];
     
     # Definition of aggregate functions:
-    private $aggregateFunctions    = [ 'SUM', 'AVG' ];
+    private $aggregateFunctions    = [ 'AVG', 'MAX', 'MIN', 'SUM' ];
     
     function __construct( $json )
     {
@@ -96,7 +96,6 @@ class JQL
         
         $this->setLocale();
         $this->setTimezone( date_default_timezone_get() );
-        
     }
     
     # Set the locale:
@@ -186,7 +185,7 @@ class JQL
             'type' => $operand,
             'ops'  => [ ]
         ];
-        
+
         foreach( $parts as $clause )
         {
             # Handle NULL:
@@ -297,7 +296,7 @@ class JQL
                 ];
             }
             
-            #ÊIN / NOT IN:
+            # IN / NOT IN:
             elseif( preg_match($this->whereFuncRegExIn, $clause, $clauseParts) )
             {
                 # Convert the parameter to an array:
@@ -330,7 +329,6 @@ class JQL
                             'compare' => trim(end($clauseParts))
                         ];
 
-                        # If we've found one, break (otherwise >= will evaluate to >):
                         break;
                     }
                 }
@@ -401,14 +399,14 @@ class JQL
         return (count($this->result) > 0 ) ? $this->result : null;
     }
     
-    #ÊFetch all matches as JSON:
+    # Fetch all matches as JSON:
     public function fetchAsJSON( bool $pretty = false)
     {
         return ($pretty) ? json_encode($this->fetch(), JSON_PRETTY_PRINT)
                          : json_encode($this->fetch());
     }
     
-    #ÊFetch one result as JSON:
+    # Fetch one result as JSON:
     public function fetchOneAsJSON( bool $pretty = false )
     {
         return json_encode(
@@ -416,7 +414,7 @@ class JQL
         );
     }
     
-    #ÊSave the output to a JSON file:
+    # Save the output to a JSON file:
     public function saveAsFile( $filename )
     {
         # Open a file pointer:
@@ -430,7 +428,6 @@ class JQL
         
         return ($result > 0);
     }
-    
     
     # Count the number of matches:
     public function count()
@@ -773,6 +770,27 @@ class JQL
             $value = implode($sep, $tmp);
         }
         
+        # Selects all unique values for the given field (assumes fields are arrays):
+        elseif( $function == 'DISTINCT' )
+        {
+            if( count($args) < 1 )
+            {
+                throw new SyntaxException('Invalid parameter count for function '.$function.'; expects exactly 1 parameter.');
+            }
+
+            $values = [ ];
+
+            foreach( $args as $field )
+            {
+                if( array_key_exists($field, $row) )
+                {
+                    $values = array_merge($values, (is_array($row[$field]) ? $row[$field] : [ $row[$field] ]));
+                }
+            }
+
+            $value = array_unique($values);
+        }
+
         # Formats a number to a format like "#,###,###.##", rounded to a specified number of decimal places
         elseif( $function == 'FORMAT' )
         {
@@ -1426,6 +1444,22 @@ class JQL
             
             return $total / $numRows;
         }
+
+        # Return the maximum value for a field:
+        elseif( $function == 'MAX' || $function == 'MIN' )
+        {
+            $values = [ ];
+
+            foreach( $rows as $row )
+            {
+                if( array_key_exists($args[0], $row) )
+                {
+                    $values[] = $row[ $args[0] ];
+                }
+            }
+
+            return ($function == 'MAX') ? max($values) : min($values);
+        }
         
         # Calculates the sum of a set of values
         elseif( $function == 'SUM' )
@@ -1573,7 +1607,6 @@ class JQL
         }
         
         # NULL:
-        
         
         # IN() function:
         elseif( $clause['operand'] == 'IN' )
