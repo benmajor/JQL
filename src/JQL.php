@@ -116,10 +116,27 @@ class JQL
         
         return $this;
     }
+
+    # Reset everything (so we can use the same object):
+    public function reset()
+    {
+        $this->$fields    = '*';
+        $this->$where     = [ ];
+        $this->$order     = [ ];
+        $this->$updates   = [ ];
+        $this-> $limitAmt  = null;
+        $this->$offsetAmt = 0;
+
+        # Return the object to preserve method-chaining:
+        return $this;
+    }
     
     # Start by adding which fields to select:
     public function select( $fields )
     {
+        # Clear:
+        $this->reset();
+        
         $this->mode = 'select';
         
         if( is_array($fields) )
